@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import project helper modules
-import model
+import colab_model as model
 import weather_helper
 import llm_helper
 import report_helper
