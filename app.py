@@ -227,6 +227,21 @@ if run_predict:
                 api_key_openai=openai_key,
                 api_key_gemini=gemini_key
             )
+
+            # Validate generated report uses the same prediction details.
+            crop_name, disease_name = llm_helper.parse_prediction_label(diag_results["class_name"])
+            if not llm_helper.validate_report_matches_prediction(ai_rec, crop_name, disease_name):
+                ai_rec = llm_helper.get_recommendation_report(
+                    disease_class=diag_results["class_name"],
+                    confidence=diag_results["confidence"],
+                    soil_data=soil_dict,
+                    weather_data=weather_data,
+                    user_desc=user_description,
+                    api_key_openai=openai_key,
+                    api_key_gemini=gemini_key,
+                    force_fallback=True
+                )
+
             st.session_state.rec_original = ai_rec
             st.session_state.rec_text = ai_rec
             st.session_state.rec_status = "Draft"  # Reset status to draft for review

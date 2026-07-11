@@ -60,6 +60,27 @@ DISEASE_INFO = {
     }
 }
 
+def parse_prediction_label(disease_class):
+    """Convert the internal class label into crop and disease strings."""
+    parts = disease_class.split('___')
+    if len(parts) == 2:
+        crop_name = parts[0]
+        disease_name = parts[1].replace('_', ' ')
+    else:
+        crop_name = disease_class
+        disease_name = disease_class
+    return crop_name, disease_name
+
+
+def validate_report_matches_prediction(report, crop_name, disease_name):
+    normalized = report.lower()
+    if crop_name.lower() not in normalized:
+        return False
+    if disease_name.lower() not in normalized:
+        return False
+    return True
+
+
 def generate_cultural_recommendations(soil_data, weather_data):
     """
     Generate customized cultural and physical practices based on soil nutrients and weather conditions.
@@ -112,69 +133,72 @@ def generate_cultural_recommendations(soil_data, weather_data):
         
     return recs
 
-def get_recommendation_report(disease_class, confidence, soil_data, weather_data, user_desc="", api_key_openai=None, api_key_gemini=None):
+def get_recommendation_report(disease_class, confidence, soil_data, weather_data, user_desc="", api_key_openai=None, api_key_gemini=None, force_fallback=False):
     """
     Unified LLM call: Generates a complete explanation and recommendations report.
     Checks for Gemini or OpenAI keys. If none are provided, falls back to the smart rule-based generator.
     """
     openai_key = api_key_openai or os.getenv("OPENAI_API_KEY")
     gemini_key = api_key_gemini or os.getenv("GEMINI_API_KEY")
+    crop_name, disease_name = parse_prediction_label(disease_class)
     
-    # 1. Prepare data variables for prompt
     crop_info = DISEASE_INFO.get(disease_class, DISEASE_INFO["Corn___Healthy"])
     
     prompt = f"""
-You are an expert Agricultural Agronomist and Plant Pathologist. Generate a comprehensive agronomic diagnosis and treatment recommendation report based on the following multi-modal inputs:
+You are an expert Agricultural Agronomist and Plant Pathologist.
 
-[Pathology Diagnosis]
-- Predicted Disease: {disease_class}
-- CNN Confidence Score: {confidence * 100:.1f}%
-- Pathogen: {crop_info['pathogen']}
+Predicted Crop: {crop_name}
+Predicted Disease: {disease_name}
+CNN Confidence Score: {confidence * 100:.1f}%
+Pathogen: {crop_info['pathogen']}
 
-[Soil Analysis Results]
-- Soil pH: {soil_data.get('ph')} (Optimal: 6.0 - 6.8)
+Soil Analysis Results:
+- pH: {soil_data.get('ph')} (Optimal: 6.0 - 6.8)
 - Nitrogen (N): {soil_data.get('n')} mg/kg (Optimal: 40 - 100)
 - Phosphorus (P): {soil_data.get('p')} mg/kg (Optimal: 30 - 80)
 - Potassium (K): {soil_data.get('k')} mg/kg (Optimal: 70 - 180)
 - Soil Moisture: {soil_data.get('moisture')}% (Optimal: 40% - 70%)
 
-[Environmental Weather]
+Environmental Weather:
 - Location/City: {weather_data.get('city')}
 - Temperature: {weather_data.get('temperature')}°C
 - Humidity: {weather_data.get('humidity')}%
 - Wind Speed: {weather_data.get('wind_speed')} m/s
 - Sky Conditions: {weather_data.get('description')}
 
-[Farmer Observations]
-- Problem Description: "{user_desc if user_desc else 'No notes provided.'}"
+Farmer Observations:
+- {user_desc if user_desc else 'No notes provided.'}
 
-Please structure your report in markdown with the following specific sections:
+Instructions:
+- Use ONLY the predicted crop and predicted disease in this report.
+- Do NOT change the predicted crop ({crop_name}) or the predicted disease ({disease_name}).
+- Do NOT mention or recommend any disease other than the detected disease.
+- Do NOT include example diseases or alternate diagnoses.
+- If the confidence is low, explicitly mention uncertainty but do not substitute a different diagnosis.
+- Provide recommendations only for the detected disease and its mapped pathogen.
+
+Please structure your report in markdown with the following sections:
 ### 1. Disease Pathology & Explanation
-Explain the disease, the causative pathogen, and how environmental weather conditions are influencing the pathogen's current development or risk.
-
 ### 2. Treatment Strategy: Biological Controls
-Recommend organic, biological, or chemical-free options (e.g., beneficial microbes, botanical extracts).
-
 ### 3. Treatment Strategy: Chemical Controls
-Provide targeted synthetic or inorganic chemical solutions, application timing, dosage instructions, and resistance management notes.
-
 ### 4. Treatment Strategy: Cultural & Soil Amendments
-Provide actionable changes to farm practices (watering, spacing, soil fertilization) based on the current weather and soil test results (pH, N, P, K, moisture deficiencies).
 """
 
-    # 2. Try Gemini API
-    if gemini_key:
+    # 2. Try Gemini API if not forcing fallback
+    if gemini_key and not force_fallback:
         try:
             genai.configure(api_key=gemini_key)
             model = genai.GenerativeModel("gemini-1.5-flash")
             response = model.generate_content(prompt)
-            if response.text:
+            if response.text and validate_report_matches_prediction(response.text, crop_name, disease_name):
                 return response.text
+            elif response.text:
+                print("Gemini response failed validation. Falling back to rule-based report.")
         except Exception as e:
             print(f"Gemini API execution failed: {e}. Trying OpenAI...")
             
-    # 3. Try OpenAI API
-    if openai_key:
+    # 3. Try OpenAI API if not forcing fallback
+    if openai_key and not force_fallback:
         try:
             client = openai.OpenAI(api_key=openai_key)
             completion = client.chat.completions.create(
@@ -185,7 +209,10 @@ Provide actionable changes to farm practices (watering, spacing, soil fertilizat
                 ]
             )
             if completion.choices[0].message.content:
-                return completion.choices[0].message.content
+                response_text = completion.choices[0].message.content
+                if validate_report_matches_prediction(response_text, crop_name, disease_name):
+                    return response_text
+                print("OpenAI response failed validation. Falling back to rule-based report.")
         except Exception as e:
             print(f"OpenAI API execution failed: {e}. Falling back to Rule-Based system...")
 
@@ -194,7 +221,8 @@ Provide actionable changes to farm practices (watering, spacing, soil fertilizat
     cultural_str = "\n".join([f"- {rec}" for rec in cultural_recs])
     
     fallback_report = f"""### 1. Disease Pathology & Explanation
-- **Disease Target**: {disease_class.replace("___", " - ").replace("_", " ")} (CNN Confidence: {confidence * 100:.1f}%)
+- **Crop**: {crop_name}
+- **Disease Target**: {disease_name} (CNN Confidence: {confidence * 100:.1f}%)
 - **Pathogen Agent**: *{crop_info['pathogen']}*
 - **Aetiology**: {crop_info['explanation']}
 - **Weather Factor**: Current ambient temperature of {weather_data.get('temperature')}°C and humidity of {weather_data.get('humidity')}% are playing a key role in the crop microclimate. High relative humidity increases the spore hydration levels required for foliar penetration.
@@ -205,11 +233,11 @@ Provide actionable changes to farm practices (watering, spacing, soil fertilizat
 
 ### 3. Treatment Strategy: Chemical Controls
 - **Fungicide Spray**: {crop_info['chem']}
-- **FRAC Code Rotation**: For Alternaria or Puccinia species, alternate strobilurins (group 11) with triazoles (group 3) or chlorothalonil (group M5) to prevent genetic resistance development. Always respect harvest intervals (PHI).
+- **FRAC Code Rotation**: Rotate fungicide classes according to label recommendations to prevent resistance buildup. Always respect harvest intervals (PHI).
 
 ### 4. Treatment Strategy: Cultural & Soil Amendments
 {cultural_str}
-- **Foliage Spacing**: Maintain a plant spacing of at least 30-40 cm to promote healthy wind circulation, keeping leaves dry and preventing spores from spreading.
-- **Sanitation**: Clean tools with 10% bleach solution between plots. Remove all infected leaves immediately.
+- **Foliage Spacing**: Maintain adequate plant spacing to promote healthy wind circulation, keeping leaves dry and preventing spores from spreading.
+- **Sanitation**: Clean tools between plots and remove infected leaves immediately.
 """
     return fallback_report
