@@ -1,0 +1,13 @@
+streamlit>=1.20.0
+opencv-python>=4.5.5.64
+numpy>=1.23.0
+pandas>=1.5.0
+Pillow>=9.0.0
+reportlab>=3.6.12
+requests>=2.28.0
+python-dotenv>=0.21.0
+openai>=0.27.0
+# google-generative-ai is optional and may not be available on Python 3.14.
+# The app will still run with OpenAI or rule-based fallbacks.
+# TensorFlow is intentionally omitted for Python 3.14 compatibility.
+# The repository includes a local tensorflow stub package in `tensorflow/` for demo mode.
