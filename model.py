@@ -1,7 +1,6 @@
 import os
 import numpy as np
-import cv2
-from PIL import Image
+from PIL import Image, ImageFilter
 
 # Import tensorflow (which might be the real one or our mock local version)
 import tensorflow as tf
@@ -213,29 +212,39 @@ def get_gradcam_heatmap(model, img_array, class_idx):
             print(f"Error computing real TF Grad-CAM: {e}. Falling back to dummy heatmap.")
             # Fallback dummy heatmap centered on spots
             h = np.zeros((56, 56), dtype=np.float32)
-            cv2.circle(h, (28, 28), 12, 1.0, -1)
-            cv2.GaussianBlur(h, (15, 15), 0)
+            cy, cx = 28, 28
+            rr, cc = np.ogrid[:56, :56]
+            mask = (rr - cy) ** 2 + (cc - cx) ** 2 <= 12 ** 2
+            h[mask] = 1.0
+            h = np.array(Image.fromarray((h * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(radius=7)), dtype=np.float32) / 255.0
             return h
+
+def apply_jet_colormap(gray_image):
+    """Apply a JET-style colormap using PIL and Numpy."""
+    gray = np.clip(gray_image, 0.0, 1.0)
+    gray_uint8 = np.uint8(gray * 255)
+    # Create simple JET map via interpolation across channels
+    r = np.clip(1.5 - np.abs((gray_uint8 / 255.0) * 2 - 1.5), 0.0, 1.0)
+    g = np.clip(1.5 - np.abs((gray_uint8 / 255.0) * 2 - 0.5), 0.0, 1.0)
+    b = np.clip(1.5 - np.abs((gray_uint8 / 255.0) * 2 + 0.5), 0.0, 1.0)
+    heatmap_rgb = np.stack([r, g, b], axis=-1)
+    heatmap_rgb = np.uint8(heatmap_rgb * 255)
+    return heatmap_rgb
+
 
 def overlay_heatmap(original_img, heatmap, alpha=0.55):
     """
-    Resizes heatmap and overlays it onto the original RGB image using JET colormap.
+    Resizes heatmap and overlays it onto the original RGB image using a JET-like colormap.
     """
-    # Resize heatmap to match original image size
-    heatmap_resized = cv2.resize(heatmap, (original_img.shape[1], original_img.shape[0]))
-    
-    # Scale heatmap to [0, 255]
-    heatmap_scaled = np.uint8(255 * heatmap_resized)
-    
-    # Apply JET colormap (in BGR)
-    heatmap_colormap = cv2.applyColorMap(heatmap_scaled, cv2.COLORMAP_JET)
-    
-    # Convert BGR to RGB
-    heatmap_colormap_rgb = cv2.cvtColor(heatmap_colormap, cv2.COLOR_BGR2RGB)
-    
-    # Blend images: original_img is shape (224, 224, 3) and uint8
-    blended = cv2.addWeighted(original_img, alpha, heatmap_colormap_rgb, 1 - alpha, 0)
-    return blended, heatmap_colormap_rgb
+    original_h, original_w = original_img.shape[0], original_img.shape[1]
+    heatmap_img = Image.fromarray(np.uint8(np.clip(heatmap, 0.0, 1.0) * 255))
+    heatmap_img = heatmap_img.resize((original_w, original_h), resample=Image.BILINEAR)
+    heatmap_np = np.array(heatmap_img, dtype=np.float32) / 255.0
+    heatmap_color = apply_jet_colormap(heatmap_np)
+
+    original_float = original_img.astype(np.float32) / 255.0
+    blended = np.uint8(np.clip(original_float * alpha + heatmap_color.astype(np.float32) / 255.0 * (1 - alpha), 0.0, 1.0) * 255)
+    return blended, heatmap_color
 
 def analyze_image_features(img_rgb):
     """
